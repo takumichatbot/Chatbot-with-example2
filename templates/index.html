@@ -8,8 +8,8 @@
 </head>
 <body>
     <div class="language-switcher" style="position: absolute; top: 10px; right: 10px; z-index: 100;">
-        <button onclick="setLanguage('ja')">日本語</button>
-        <button onclick="setLanguage('en')">English</button>
+        <button data-lang="ja">日本語</button>
+        <button data-lang="en">English</button>
     </div>
 
     <div class="chatbot-container">
@@ -18,7 +18,7 @@
         </div>
         <div class="chatbot-messages" id="chatbot-messages">
             <div class="message bot-message" data-i18n-key="welcome_message">こんにちは！LARUbot(ラルボット)です！ 何か質問はありますか？(プラン説明や導入までの流れなど)</div>
-            <div class="example-questions-container" id="example-questions-container">
+            <div class="example-questions-container" id="initial-example-questions">
                 {% for question in example_questions %}
                 <button class="example-btn">{{ question }}</button>
                 {% endfor %}
@@ -26,7 +26,7 @@
         </div>
         <div class="chatbot-input">
             <input type="text" id="user-input" placeholder="メッセージを入力..." data-i18n-key-placeholder="input_placeholder" onkeypress="handleKeyPress(event)">
-            <button onclick="sendMessage()" data-i18n-key="send_button">送信</button>
+            <button id="send-button" data-i18n-key="send_button">送信</button>
         </div>
     </div>
    <script src="/static/script.js"></script>
