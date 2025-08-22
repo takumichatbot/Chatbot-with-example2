@@ -15,7 +15,7 @@ load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 genai.configure(api_key=GOOGLE_API_KEY)
 
-# --- LINE APIの初期化 (環境変数がなくてもエラーにしない) ---
+# --- LINE APIの初期化 ---
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 line_bot_api = None
@@ -37,20 +37,23 @@ def load_json_files(directory):
     return data
 
 knowledge_bases = load_json_files('static/knowledge')
+
+# ===== ▼▼▼ AIへの指示（プロンプト）を改善 ▼▼▼ =====
 prompts = {
     'ja': {
-        "system_role": "あなたはLARUbotのカスタマーサポートAIです。以下の「ルール・規則」セクションに記載されている情報のみに基づいて、お客様からの質問に絵文字を使わずに丁寧に回答してください。**記載されていない質問には「申し訳ありませんが、その情報はこのQ&Aには含まれていません。」と答えてください。**お客様がスムーズに手続きを進められるよう、元気で丁寧な言葉遣いで案内してください。",
-        "follow_up_prompt": "上記のユーザーからの質問とAIの回答に基づき、ユーザーが次に関心を持ちそうな関連性の高い質問を3つ提案してください。簡潔で分かりやすい質問にしてください。回答は必ずJSON形式の文字列リスト（例: [\"質問1\", \"質問2\", \"質問3\"]）で、リスト以外の文字列は一切含めずに返してください。適切な質問がなければ空のリスト `[]` を返してください。",
+        "system_role": "あなたはLARUbotの優秀なカスタマーサポートAIです。以下のナレッジベースに記載されている情報をすべて注意深く読み、お客様の質問に対する答えを探してください。答えがナレッジベース内に明確に記載されている場合は、その情報のみを使って丁寧に回答してください。複数の項目に関連する可能性がある場合は、それらを統合して答えてください。**もし、いくら探しても答えがナレッジベース内に見つからない場合のみ、「申し訳ありませんが、その情報はこのQ&Aには含まれていません。」と答えてください。**",
+        "follow_up_prompt": "あなたはユーザーの思考を先読みするアシスタントです。上記の会話と、あなたが回答の根拠として使用したナレッジベース全体を考慮して、ユーザーが次に関心を持ちそうな質問を3つ提案してください。**提案する質問は、必ずナレッジベース内の情報から回答できるものにしてください。** 回答は必ずJSON形式の文字列リスト（例: [\"質問1\", \"質問2\", \"質問3\"]）で、リスト以外の文字列は一切含めずに返してください。適切な質問がなければ空のリスト `[]` を返してください。",
         "not_found": "申し訳ありませんが、その情報はこのQ&Aには含まれていません。",
         "error": "申し訳ありませんが、現在AIが応答できません。しばらくしてから再度お試しください。"
     },
     'en': {
-        "system_role": "You are a customer support AI for LARUbot. Based only on the information provided in the 'Rules & Regulations' section below, please answer customer questions politely and without using emojis. **If a question is not covered, reply with 'I'm sorry, but that information is not included in this Q&A.'** Please use a cheerful and polite tone to guide customers smoothly.",
-        "follow_up_prompt": "Based on the user's question and the AI's answer above, suggest three relevant follow-up questions the user might be interested in next. Keep the questions concise and clear. Your response must be only a JSON formatted list of strings (e.g., [\"Question 1\", \"Question 2\", \"Question 3\"]) with no other text. If no suitable questions can be generated, return an empty list `[]`.",
+        "system_role": "You are an excellent customer support AI for LARUbot. Please carefully read all the information in the knowledge base below to find the answer to the customer's question. If the answer is clearly stated in the knowledge base, use only that information to provide a polite response. If the question relates to multiple items, synthesize them to answer. **Only if you cannot find the answer in the knowledge base after a thorough search, reply with 'I'm sorry, but that information is not included in this Q&A.'**",
+        "follow_up_prompt": "You are an assistant who anticipates user thoughts. Considering the conversation above and the entire knowledge base you used for the answer, suggest three follow-up questions the user might be interested in. **Ensure that the suggested questions can be answered using information from the knowledge base.** Your response must be only a JSON formatted list of strings (e.g., [\"Question 1\", \"Question 2\", \"Question 3\"]) with no other text. If no suitable questions can be generated, return an empty list `[]`.",
         "not_found": "I'm sorry, but that information is not included in this Q&A.",
         "error": "Sorry, the AI is currently unable to respond. Please try again later."
     }
 }
+# ===== ▲▲▲ ここまで ▲▲▲ =====
 
 # --- 言語判定関数 ---
 def detect_language(text):
@@ -75,7 +78,7 @@ def get_gemini_answer(question, lang):
         full_question = f"""{prompt_data['system_role']}
 
 ---
-## ルール・規則 (Rules & Regulations)
+## ナレッジベース (Knowledge Base)
 {qa_prompt_text}
 ---
 
@@ -89,9 +92,14 @@ def get_gemini_answer(question, lang):
 
     # STEP 2: 関連質問を生成
     try:
-        follow_up_request = f"""ユーザーの質問: {question}
+        follow_up_request = f"""## ナレッジベース
+{qa_prompt_text}
+
+## 直前の会話
+ユーザーの質問: {question}
 AIの回答: {answer}
 
+## 指示
 {prompt_data['follow_up_prompt']}"""
         follow_up_response = model.generate_content(follow_up_request, request_options={'timeout': 20})
         
@@ -150,4 +158,3 @@ def handle_message(event):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5003))
     app.run(host='0.0.0.0', port=port, debug=False)
-    
