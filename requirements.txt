@@ -1,5 +1,5 @@
 aenum==3.1.16
-aiohappyeyballs==2.6.1
+aiohappyeyeballs==2.6.1  # <-- ここのスペルを修正しました
 aiohttp==3.12.15
 aiosignal==1.4.0
 annotated-types==0.7.0
