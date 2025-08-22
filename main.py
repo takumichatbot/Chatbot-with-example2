@@ -8,8 +8,6 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import re
-# ▼▼▼ 翻訳ライブラリをインポート ▼▼▼
-from google.cloud import translate_v2 as translate
 
 load_dotenv()
 
@@ -27,8 +25,6 @@ if LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET:
     handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 app = Flask(__name__)
-# ▼▼▼ 翻訳クライアントを初期化 ▼▼▼
-translate_client = translate.Client()
 
 # --- 多言語ナレッジベースとプロンプトの読み込み ---
 def load_json_files(directory):
@@ -41,90 +37,65 @@ def load_json_files(directory):
     return data
 
 knowledge_bases = load_json_files('static/knowledge')
-# (prompts辞書は変更なし)
+prompts = {
+    'ja': {
+        "system_role": "あなたはLARUbotのカスタマーサポートAIです。以下の「ルール・規則」セクションに記載されている情報のみに基づいて、お客様からの質問に絵文字を使わずに丁寧に回答してください。**記載されていない質問には「申し訳ありませんが、その情報はこのQ&Aには含まれていません。」と答えてください。**お客様がスムーズに手続きを進められるよう、元気で丁寧な言葉遣いで案内してください。",
+        "follow_up_prompt": "上記のユーザーからの質問とAIの回答に基づき、ユーザーが次に関心を持ちそうな関連性の高い質問を3つ提案してください。簡潔で分かりやすい質問にしてください。回答は必ずJSON形式の文字列リスト（例: [\"質問1\", \"質問2\", \"質問3\"]）で、リスト以外の文字列は一切含めずに返してください。適切な質問がなければ空のリスト `[]` を返してください。",
+        "not_found": "申し訳ありませんが、その情報はこのQ&Aには含まれていません。",
+        "error": "申し訳ありませんが、現在AIが応答できません。しばらくしてから再度お試しください。"
+    },
+    'en': {
+        "system_role": "You are a customer support AI for LARUbot. Based only on the information provided in the 'Rules & Regulations' section below, please answer customer questions politely and without using emojis. **If a question is not covered, reply with 'I'm sorry, but that information is not included in this Q&A.'** Please use a cheerful and polite tone to guide customers smoothly.",
+        "follow_up_prompt": "Based on the user's question and the AI's answer above, suggest three relevant follow-up questions the user might be interested in next. Keep the questions concise and clear. Your response must be only a JSON formatted list of strings (e.g., [\"Question 1\", \"Question 2\", \"Question 3\"]) with no other text. If no suitable questions can be generated, return an empty list `[]`.",
+        "not_found": "I'm sorry, but that information is not included in this Q&A.",
+        "error": "Sorry, the AI is currently unable to respond. Please try again later."
+    }
+}
 
 # --- 言語判定関数 ---
 def detect_language(text):
     try:
-        return detect(text)
+        lang = detect(text)
+        # サポートしている言語(ja, en)以外は 'ja' にする
+        return lang if lang in knowledge_bases else 'ja'
     except LangDetectException:
-        return 'ja'
+        return 'ja' 
 
-# --- Gemini応答生成関数 (自動翻訳機能付き) ---
+# --- Gemini応答生成関数 ---
 def get_gemini_answer(question, lang):
     print(f"質問: {question} (言語: {lang})")
     
-    base_lang = 'ja' # システムの基準言語
-    target_lang = lang
-
-    # STEP 0: 未知の言語の場合、質問を基準言語に翻訳
-    if target_lang not in knowledge_bases:
-        print(f"{target_lang} は未対応言語。質問を {base_lang} に翻訳します。")
-        translation = translate_client.translate(question, target_language=base_lang)
-        question = translation['translatedText']
-        lang = base_lang # これ以降の処理は基準言語で行う
-
-    qa_data = knowledge_bases.get(lang)
-    prompt_data = prompts.get(lang)
+    qa_data = knowledge_bases.get(lang, knowledge_bases['ja'])
+    prompt_data = prompts.get(lang, prompts['ja'])
+    
     qa_prompt_text = "\n\n".join([f"### {key}\n{value}" for key, value in qa_data['data'].items()])
     model = genai.GenerativeModel('models/gemini-1.5-flash')
 
-    # STEP 1: 通常の回答を生成 (基準言語で)
+    # STEP 1: 通常の回答を生成
     try:
-        full_question = f"{prompt_data['system_role']}\n\n---\n## ルール・規則\n{qa_prompt_text}\n---\n\nお客様の質問: {question}"
+        full_question = f"""{prompt_data['system_role']}
+
+---
+## ルール・規則 (Rules & Regulations)
+{qa_prompt_text}
+---
+
+お客様の質問 (Customer's Question): {question}
+"""
         response = model.generate_content(full_question, request_options={'timeout': 30})
         answer = response.text.strip() if response and response.text else prompt_data['not_found']
     except Exception as e:
         print(f"Gemini APIエラー (回答生成): {e}")
-        answer = prompt_data['error']
-        # エラーでも後続処理に進む
-        follow_up_questions = []
+        return {"answer": prompt_data['error'], "follow_up_questions": []}
 
-    # STEP 2: 関連質問を生成 (基準言語で)
-    # エラー時は関連質問を生成しない
-    if "申し訳ありません" not in answer:
-        try:
-            follow_up_request = f"ユーザーの質問: {question}\nAIの回答: {answer}\n\n{prompt_data['follow_up_prompt']}"
-            follow_up_response = model.generate_content(follow_up_request, request_options={'timeout': 20})
-            json_str_match = re.search(r'\[.*\]', follow_up_response.text, re.DOTALL)
-            follow_up_questions = json.loads(json_str_match.group()) if json_str_match else []
-        except Exception as e:
-            print(f"Gemini APIエラー (関連質問生成): {e}")
-            follow_up_questions = []
-    else:
-        follow_up_questions = []
+    # STEP 2: 関連質問を生成
+    try:
+        follow_up_request = f"""ユーザーの質問: {question}
+AIの回答: {answer}
 
-    # STEP 3: 未知の言語の場合、回答と関連質問を元の言語に翻訳
-    if target_lang not in knowledge_bases:
-        print(f"回答と関連質問を {target_lang} に翻訳します。")
-        # 回答の翻訳
-        answer_translation = translate_client.translate(answer, target_language=target_lang)
-        answer = answer_translation['translatedText']
-        # 関連質問の翻訳 (リストを一括で翻訳)
-        if follow_up_questions:
-            questions_translations = translate_client.translate(follow_up_questions, target_language=target_lang)
-            follow_up_questions = [item['translatedText'] for item in questions_translations]
-
-    return {"answer": answer, "follow_up_questions": follow_up_questions}
-
-# (Flaskルーティング部分は変更なし)
-@app.route('/')
-def index():
-    example_questions = knowledge_bases['ja'].get('example_questions', [])
-    return render_template('index.html', example_questions=example_questions)
-
-@app.route('/ask', methods=['POST'])
-def ask_chatbot():
-    user_message = request.json.get('message')
-    if not user_message:
-        return jsonify({'answer': '質問が空です。', "follow_up_questions": []})
-    lang = detect_language(user_message)
-    bot_response_data = get_gemini_answer(user_message, lang)
-    return jsonify(bot_response_data)
-
-# (LINE関連のコードも変更なし)
-# ...
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5003))
-    app.run(host='0.0.0.0', port=port, debug=False)
+{prompt_data['follow_up_prompt']}"""
+        follow_up_response = model.generate_content(follow_up_request, request_options={'timeout': 20})
+        
+        json_str_match = re.search(r'\[.*\]', follow_up_response.text, re.DOTALL)
+        if json_str_match:
+            follow_up_questions = json
